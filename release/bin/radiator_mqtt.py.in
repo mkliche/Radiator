@@ -1,0 +1,83 @@
+#!  /usr/bin/env python3
+# -*- coding: UTF-8 -*-
+
+import sys
+import re
+import time
+import json
+import paho.mqtt.client as mqtt
+import os
+
+broker_address = os.environ.get("RADIATOR_MQTT_BROKER_ADDRESS")
+port = int(os.environ.get("RADIATOR_MQTT_BROKER_PORT"))
+publish_topic = os.environ.get("RADIATOR_MQTT_PUBLISH_TOPIC")
+min_publish_interval = int(os.environ.get("RADIATOR_MQTT_MIN_PUBLISH_INTERVAL"))
+
+client = mqtt.Client()
+
+def on_connect(client, userdata, flags, rc):
+    global connected
+    connected = True
+    print("Connected to MQTT Broker: " + broker_address)
+
+def init_mqtt():
+    client.on_connect = on_connect
+
+    while True:
+        try:
+            client.connect(broker_address, port)
+            break
+        except:
+            print("Could not connect to MQTT Broker: " + broker_address)
+            print("Will try again in 10s")
+            time.sleep(10)
+
+    client.loop_start()
+
+init_mqtt()
+
+next_publish = time.time()
+
+valueCleanupRE = re.compile(r"[^-0-9.]*")
+unitCleanupRE = re.compile(r"[-0-9.]*")
+
+timestampRE = re.compile(r"^\[TIME\] [A-Za-z]*, ([-0-9]*), ([:0-9]*)")
+timestamp = None
+
+valueRE = re.compile(r"^\[VALUE\] 0*([0-9]+) \[([^]]*)\] = \[([^]]*)] \[(.)\]")
+values = {}
+while True:
+   line = sys.stdin.readline()
+   if not line: break # EOF
+
+   timestamp_match = timestampRE.match(line)
+   if timestamp_match:
+      timestamp=timestamp_match.group(1) + " " + timestamp_match.group(2)
+
+   if timestamp:
+      value_match = valueRE.match(line)
+      if value_match:
+         key = int(value_match.group(1))
+         name = value_match.group(2)
+         raw_value = value_match.group(3)
+         type = value_match.group(4)
+
+         if type == "N":
+            value = valueCleanupRE.sub("", raw_value)
+            unit = unitCleanupRE.sub("", raw_value)
+         else:
+            value = "%s" % (raw_value)
+            unit = None
+
+         values[key] = {
+            "key": key,
+            "name": name,
+            "value": value,
+            "unit": unit,
+            "type": type
+         }
+
+      if len(line) == 1:
+         if time.time() >= next_publish:
+            client.publish(publish_topic, json.dumps(values))
+            next_publish += min_publish_interval
